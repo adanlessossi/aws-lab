@@ -1,0 +1,80 @@
+# ------------ Create an encryption key in Frankfurt Region ---------------
+->aws kms create-key --description "GENIUSCLOUD" --region eu-central-1
+
+==> Output
+{
+    "KeyMetadata": {
+        "AWSAccountId": "<AWSAccountId>",
+        "KeyId": "646a133f-0805-40cf-9987-f054182a7d2c",
+        "Arn": "arn:aws:kms:eu-central-1:<AWSAccountId>:key/646a133f-0805-40cf-9987-f054182a7d2c",
+        "CreationDate": "2020-06-11T08:01:01.708000+01:00",
+        "Enabled": true,
+        "Description": "GENIUSCLOUD",
+        "KeyUsage": "ENCRYPT_DECRYPT",
+        "KeyState": "Enabled",
+        "Origin": "AWS_KMS",
+        "KeyManager": "CUSTOMER",
+        "CustomerMasterKeySpec": "SYMMETRIC_DEFAULT",
+        "EncryptionAlgorithms": [
+            "SYMMETRIC_DEFAULT"
+        ]
+    }
+}
+
+
+#------------- Create an alias for this key ------------------
+->aws kms create-alias --target-key-id 646a133f-0805-40cf-9987-f054182a7d2c --alias-name "alias/geniuscloudkey" --region eu-central-1
+
+#------------ Generate the data key ---------------------------
+->aws kms generate-data-key --key-id alias/geniuscloudkey --key-spec AES_256  --region eu-central-1
+
+==> Output
+{
+    "CiphertextBlob": "AQIDAHhkJ/bRROXzzzqHXGjgSRYHXckNR9MTB4+SWIlb4iOO/AH7RIePNsZkPwt+08zT6XjQAAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMJTlG6x
+TOAMqYfMZ3AgEQgDsRZLmHmw9mUGC5Xg2qaFAOiq9FQwR9JD3Wr+Vr5BgnM7VUeeUvHm4NeQlcAMEU84bCbIfNfBGpe9chGw==",
+    "Plaintext": "WqWVsCI0nb1TIHYnlBTtUR2/qEbkeFYUjY4GwcymlwY=",
+    "KeyId": "arn:aws:kms:eu-central-1:<AWSAccountId>:key/646a133f-0805-40cf-9987-f054182a7d2c"
+}
+
+
+#------------ Generate some data from the Output to play with -----------------------------------------
+
+->echo "AQIDAHhkJ/bRROXzzzqHXGjgSRYHXckNR9MTB4+SWIlb4iOO/AH7RIePNsZkPwt+08zT6XjQAAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMJTlG6x
+TOAMqYfMZ3AgEQgDsRZLmHmw9mUGC5Xg2qaFAOiq9FQwR9JD3Wr+Vr5BgnM7VUeeUvHm4NeQlcAMEU84bCbIfNfBGpe9chGw=="  > datakey_ciphertext_base64.txt
+->echo "WqWVsCI0nb1TIHYnlBTtUR2/qEbkeFYUjY4GwcymlwY=" > datakey_plaintext_base64.txt
+
+cat datakey_plaintext_base64.txt | base64 --decode > datakey_plaintext_decoded.txt
+
+echo "Secret encoding is amazing"  | openssl enc -e -aes256 -md md5 -pbkdf2 -k fileb://datakey_plaintext_decoded.txt > topsecret.txt
+
+cat topsecret.txt
+
+#--------- remove the plain text ---------------
+rm datakey_plaintext_*
+
+
+cat datakey_ciphertext_base64.txt | base64 --decode > ./datakey_ciphertext_decoded.txt
+
+
+aws kms decrypt --ciphertext-blob fileb://datakey_ciphertext_decoded.txt --region eu-central-1
+
+==> Output
+{
+    "KeyId": "arn:aws:kms:eu-central-1:<AWSAccountId>:key/646a133f-0805-40cf-9987-f054182a7d2c",
+    "Plaintext": "WqWVsCI0nb1TIHYnlBTtUR2/qEbkeFYUjY4GwcymlwY=",
+    "EncryptionAlgorithm": "SYMMETRIC_DEFAULT"
+}
+
+
+
+echo "WqWVsCI0nb1TIHYnlBTtUR2/qEbkeFYUjY4GwcymlwY=" > ./datakey_plaintext_base64.txt
+
+cat datakey_plaintext_base64.txt | base64 --decode > datakey_plaintext_decoded.txt
+
+cat ./topsecret.txt | openssl enc -d -aes256 -pbkdf2 -md md5 -k fileb://datakey_plaintext_decoded.txt
+
+===========================================================================================
+
+
+
+
