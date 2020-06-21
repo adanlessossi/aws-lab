@@ -1,0 +1,228 @@
+========================= Kubernetes Cluster On AWS Cloud ===============================
+----- Prerquisites -------------------
+-> Kubectl version --client --short
+Client Version: v1.16.8-eks-e16311
+
+Upgrade awscli2
+
+-> Create an AWS Role with Admin access
+-> Create a user and attach the newly created role
+
+-------- Preparation -------------------------------------------
+-> sudo yum -y install jq gettext bash-completion moreutils
+
+Enable kubectl bash_completion
+https://kubernetes.io/docs/tasks/tools/install-kubectl/#enabling-shell-autocompletion
+-> kubectl completion bash >>  ~/.bash_completion
+. /etc/profile.d/bash_completion.sh
+. ~/.bash_completion
+
+------------- Exports ---------------------------------------------------
+export ACCOUNT_ID=$(aws sts get-caller-identity --output text --query Account)
+export AWS_REGION=$(curl -s 169.254.169.254/latest/dynamic/instance-identity/document | jq -r '.region')
+
+Check your Region out!
+test -n "$AWS_REGION" && echo AWS_REGION is "$AWS_REGION" || echo AWS_REGION is not set
+
+echo "export ACCOUNT_ID=${ACCOUNT_ID}" | tee -a ~/.bash_profile
+echo "export AWS_REGION=${AWS_REGION}" | tee -a ~/.bash_profile
+aws configure set default.region ${AWS_REGION}
+aws configure get default.region
+
+----------- Validate the IAM role -----------------
+aws sts get-caller-identity --query Arn | grep ekscluster-admin -q && echo "IAM role valid" || echo "IAM role NOT valid"
+
+------------ CLONE THE SERVICE REPOS ------------
+git clone https://github.com/brentley/ecsdemo-frontend.git
+git clone https://github.com/brentley/ecsdemo-nodejs.git
+git clone https://github.com/brentley/ecsdemo-crystal.git
+
+------------ CREATE AN SSH KEY ------------------------
+This key will be used on the worker node instances to allow ssh access if necessary.
+
+-> ssh-keygen
+
+Enter 3 times for default choices
+
+------------ Upload the public key to your EC2 region ---------------
+aws ec2 import-key-pair --key-name "eksworkshop" --public-key-material file://~/.ssh/id_rsa.pub
+or
+aws ec2 import-key-pair --key-name "eksworkshop" --public-key-material fileb://~/.ssh/id_rsa.pub
+
+======================== Create a CMK for the EKS cluster to use when encrypting your Kubernetes secrets ===========
+aws kms create-alias --alias-name alias/eksworkshop --target-key-id $(aws kms create-key --query KeyMetadata.Arn --output text)
+
+export MASTER_ARN=$(aws kms describe-key --key-id alias/eksworkshop --query KeyMetadata.Arn --output text)
+
+echo "export MASTER_ARN=${MASTER_ARN}" | tee -a ~/.bash_profile
+
+=======================  Launch the Cluster with ekstl ==============================
+------------------ download the eksctl binary ----------------------
+curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+
+sudo mv -v /tmp/eksctl /usr/local/bin
+
+eksctl version
+0.21.0
+
+------------- Enable eksctl bash-completion -----------------
+eksctl completion bash >> ~/.bash_completion
+. /etc/profile.d/bash_completion.sh
+. ~/.bash_completion
+
+------------------- Create an EKS cluster ---------------------------------
+cat << EOF > eksworkshop.yaml
+---
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: eksworkshop-eksctl
+  region: ${AWS_REGION}
+
+managedNodeGroups:
+- name: nodegroup
+  desiredCapacity: 3
+  iam:
+    withAddonPolicies:
+      albIngress: true
+
+secretsEncryption:
+  keyARN: ${MASTER_ARN}
+EOF
+
+----------- use the file you created as the input for the eksctl cluster creation -----
+eksctl create cluster -f eksworkshop.yaml
+
+---------- Test the cluster ------------------
+kubectl get nodes # if we see our 3 nodes, we know we have authenticated correctly
+
+-------------- Export the Worker Role Name for use throughout the workshop -------------
+STACK_NAME=$(eksctl get nodegroup --cluster eksworkshop-eksctl -o json | jq -r '.[].StackName')
+ROLE_NAME=$(aws cloudformation describe-stack-resources --stack-name $STACK_NAME | jq -r '.StackResources[] | select(.ResourceType=="AWS::IAM::Role") | .PhysicalResourceId')
+echo "export ROLE_NAME=${ROLE_NAME}" | tee -a ~/.bash_profile
+
+			Amazon EKS Cluster is now ready for use!
+			========================================
+
+
+=========================== Deploy the Kubernetes Metrics Server =========================================
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.3.6/components.yaml
+
+------------ Verify that the metrics-server deployment is running the desired number of pods -------------
+kubectl get deployment metrics-server -n kube-system
+
+
+================================ deploy the official Kubernetes dashboard ===================
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.0.0/aio/deploy/recommended.yaml
+
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.0.0-beta8/aio/deploy/recommended.yaml
+
+------------------- Create an eks-admin service account and cluster role binding ------------------------------
+cat << EOF > eks-admin-service-account.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: eks-admin
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: eks-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: eks-admin
+  namespace: kube-system
+EOF
+
+kubectl apply -f eks-admin-service-account.yaml
+
+------------ Connect to the dashboard -----------------------------
+Get the token
+kubectl -n kube-system describe secret $(kubectl -n kube-system get secret | grep eks-admin | awk '{print $1}')
+
+--------- Start the proxy -----------------
+kubectl proxy
+
+--- Access the dashboard using the token -----------------------------
+http://localhost:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:/proxy/#!/login
+
+
+
+============================ Using Helm =======================================
+choco install kubernetes-helm
+
+
+
+================ EKS Cluster Role ========================
+cat << EOF > eks-cluster-role.yaml
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Amazon EKS Cluster Role'
+
+Resources:
+
+  eksClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - eks.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+
+Outputs:
+
+  RoleArn:
+    Description: The role that Amazon EKS will use to create AWS resources for Kubernetes clusters
+    Value: !GetAtt eksClusterRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-RoleArn"
+EOF
+
+============== Node Group Role =========================
+https://amazon-eks.s3.us-west-2.amazonaws.com/cloudformation/2020-06-10/amazon-eks-nodegroup-role.yaml
+
+
+
+============================ VPC for EKS =================================
+
+-> Check the Subnets
+aws ec2 describe-subnets --filters "Name=vpc-id,Values=<VPC-ID>" | grep 'SubnetId\|MapPublicIpOnLaunch' 
+
+curl -o amazon-eks-vpc-private-subnets.yaml https://amazon-eks.s3.us-west-2.amazonaws.com/cloudformation/2020-06-10/amazon-eks-vpc-private-subnets.yaml
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
